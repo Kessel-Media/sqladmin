@@ -13,7 +13,6 @@ from sqladmin.fields import (
     JSONField,
     QuerySelectField,
     QuerySelectMultipleField,
-    Select2TagsField,
     SelectField,
     TimeField,
 )
@@ -45,10 +44,9 @@ def test_date_field() -> None:
         date = DateField()
 
     form = F()
-    assert form.date.format == ["%Y-%m-%d"]
 
+    assert form.date.format == ["%Y-%m-%d"]
     assert 'data-role="datepicker"' in form.date()
-    assert 'data-date-format="YYYY-MM-DD"' in form.date()
 
     form = F(DummyData(date=["2021-12-22"]))
     assert form.date.data == date(2021, 12, 22)
@@ -59,10 +57,9 @@ def test_datetime_field() -> None:
         datetime = DateTimeField()
 
     form = F()
-    assert form.datetime.format == "%Y-%m-%d %H:%M:%S"
 
+    assert form.datetime.format == ["%Y-%m-%d %H:%M:%S"]
     assert 'data-role="datetimepicker"' in form.datetime()
-    assert 'data-date-format="YYYY-MM-DD HH:mm:ss"' in form.datetime()
 
     form = F(DummyData(datetime=["2021-12-22 12:30:00"]))
     assert form.datetime.data == datetime(2021, 12, 22, 12, 30, 0, 0)
@@ -73,24 +70,10 @@ def test_time_field() -> None:
         time = TimeField()
 
     form = F()
-    assert form.time.default_format == "%H:%M:%S"
     assert 'data-role="timepicker"' in form.time()
-    assert 'data-date-format="HH:mm:ss"' in form.time()
-
-    form = F(DummyData(time=["12:30:00"]))
-    assert form.time.data == datetime(2021, 12, 22, 12, 30, 0, 0).time()
-    assert 'data-date-format="HH:mm:ss"' in form.time()
 
     form = F(DummyData(time=["12:30"]))
-    form.time.raw_data = None
     assert form.time.data == datetime(2021, 12, 22, 12, 30, 0, 0).time()
-    assert 'data-date-format="HH:mm:ss"' in form.time()
-
-    form = F(DummyData(time=["12:30:00 AM"]))
-    assert form.time.data == datetime(2021, 12, 22, 0, 30, 0, 0).time()
-
-    form = F(DummyData(time=["12:30 AM"]))
-    assert form.time.data == datetime(2021, 12, 22, 0, 30, 0, 0).time()
 
     form = F(DummyData(time=["Invalid"]))
     assert form.time.data is None
@@ -149,42 +132,19 @@ def test_select_field() -> None:
     assert form.select.data is None
 
 
-def test_select2_tags_field() -> None:
-    class F(Form):
-        select = Select2TagsField(coerce=int)
-
-    form = F(DummyData(select=["1"]))
-    assert form.select.data == 1
-    assert 'data-role="select2-tags"' in form.select()
-    assert 'value="1"' in form.select()
-
-    form = F(DummyData(select=["A"]))
-    assert form.select.data is None
-
-    class F(Form):  # type: ignore
-        select = Select2TagsField(coerce=int, save_as_list=True)
-
-    form = F(DummyData(select=["1"]))
-    assert form.select.data == [1]
-    assert 'value="1"' in form.select()
-
-    form = F()
-    assert 'value=""' in form.select()
-
-
 def test_query_select_field() -> None:
-    object_list = [(str(i), User(id=i)) for i in range(5)]
+    select_data = [(str(i), str(User(id=i))) for i in range(5)]
 
     class F(Form):
-        select = QuerySelectField(object_list=object_list, get_label="__doc__")
+        select = QuerySelectField(data=select_data, get_label="__doc__")
 
     form = F(DummyData(select=["1"]))
-    form.select._object_list = []
+    form.select._select_data = []
     assert form.validate() is False
 
     class F(Form):  # type: ignore
         select = QuerySelectField(
-            object_list=object_list,
+            data=select_data,
             allow_blank=True,
         )
 
@@ -199,19 +159,19 @@ def test_query_select_field() -> None:
 
 
 def test_query_select_multiple_field() -> None:
-    object_list = [(str(i), User(id=i)) for i in range(5)]
+    data = [(str(i), str(User(id=i))) for i in range(5)]
 
     class F(Form):
-        select = QuerySelectMultipleField(allow_blank=True, object_list=object_list)
+        select = QuerySelectMultipleField(allow_blank=True, data=data)
 
     form = F()
     assert form.validate() is True
 
     form = F(DummyData(select=["1"]))
-    form.select._object_list = object_list
+    form.select._select_data = data
     assert form.validate() is True
 
     form = F(DummyData(select=["100"]))
-    form.select._object_list = object_list
+    form.select._select_data = data
     assert form.select.data == []
     assert form.validate() is False

@@ -1,4 +1,5 @@
 import inspect
+import sys
 from enum import Enum
 from typing import (
     Any,
@@ -20,11 +21,8 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.orm import ColumnProperty, RelationshipProperty, Session
 from sqlalchemy.sql.schema import Column
-from typing_extensions import Protocol
 from wtforms import (
     BooleanField,
-    DateField,
-    DateTimeField,
     DecimalField,
     Field,
     Form,
@@ -35,14 +33,27 @@ from wtforms import (
 )
 from wtforms.fields.core import UnboundField
 
+from sqladmin._types import ENGINE_TYPE, MODEL_ATTR_TYPE
 from sqladmin._validators import CurrencyValidator, TimezoneValidator
+from sqladmin.ajax import QueryAjaxModelLoader
 from sqladmin.exceptions import NoConverterFound
 from sqladmin.fields import (
+    AjaxSelectField,
+    AjaxSelectMultipleField,
+    DateField,
+    DateTimeField,
     JSONField,
     QuerySelectField,
     QuerySelectMultipleField,
     SelectField,
+    TimeField,
 )
+from sqladmin.helpers import get_direction, get_primary_key, is_relationship
+
+if sys.version_info >= (3, 8):
+    from typing import Protocol
+else:
+    from typing_extensions import Protocol
 
 
 class Validator(Protocol):
@@ -57,7 +68,7 @@ class ConverterCallable(Protocol):
     def __call__(
         self,
         model: type,
-        prop: Union[ColumnProperty, RelationshipProperty],
+        prop: MODEL_ATTR_TYPE,
         kwargs: Dict[str, Any],
     ) -> UnboundField:
         ...  # pragma: no cover
@@ -95,13 +106,15 @@ class ModelConverterBase:
 
     async def _prepare_kwargs(
         self,
-        prop: Union[ColumnProperty, RelationshipProperty],
-        engine: Union[Engine, AsyncEngine],
+        prop: MODEL_ATTR_TYPE,
+        engine: ENGINE_TYPE,
         field_args: Dict[str, Any],
         field_widget_args: Dict[str, Any],
         form_include_pk: bool,
         label: Optional[str] = None,
+        loader: Optional[QueryAjaxModelLoader] = None,
     ) -> Optional[Dict[str, Any]]:
+        kwargs: Union[dict, None]
         kwargs = field_args.copy()
         widget_args = field_widget_args.copy()
         widget_args.setdefault("class", "form-control")
@@ -113,88 +126,106 @@ class ModelConverterBase:
         kwargs.setdefault("description", prop.doc)
         kwargs.setdefault("render_kw", widget_args)
 
-        column = None
-
         if isinstance(prop, ColumnProperty):
-            assert len(prop.columns) == 1, "Multiple-column properties not supported"
-            column = prop.columns[0]
-
-            if (column.primary_key or column.foreign_keys) and not form_include_pk:
-                return None
-
-            default = getattr(column, "default", None)
-
-            if default is not None:
-                # Only actually change default if it has an attribute named
-                # 'arg' that's callable.
-                callable_default = getattr(default, "arg", None)
-
-                if callable_default is not None:
-                    # ColumnDefault(val).arg can be also a plain value
-                    default = (
-                        callable_default(None)
-                        if callable(callable_default)
-                        else callable_default
-                    )
-
-            kwargs["default"] = default
-            optional_types = (Boolean,)
-
-            if column.nullable:
-                kwargs["validators"].append(validators.Optional())
-
-            if (
-                not column.nullable
-                and not isinstance(column.type, optional_types)
-                and not column.default
-                and not column.server_default
-            ):
-                kwargs["validators"].append(validators.InputRequired())
+            kwargs = self._prepare_column(
+                prop=prop, kwargs=kwargs, form_include_pk=form_include_pk
+            )
         else:
-            nullable = True
-            for pair in prop.local_remote_pairs:
-                if not pair[0].nullable:
-                    nullable = False
-
-            kwargs["allow_blank"] = nullable
-            kwargs.setdefault(
-                "object_list", await self._prepare_object_list(prop, engine)
+            kwargs = await self._prepare_relationship(
+                prop=prop, engine=engine, kwargs=kwargs, loader=loader
             )
 
         return kwargs
 
-    async def _prepare_object_list(
+    def _prepare_column(
+        self, prop: ColumnProperty, form_include_pk: bool, kwargs: dict
+    ) -> Union[dict, None]:
+        assert len(prop.columns) == 1, "Multiple-column properties not supported"
+        column = prop.columns[0]
+
+        if (column.primary_key or column.foreign_keys) and not form_include_pk:
+            return None
+
+        default = getattr(column, "default", None)
+
+        if default is not None:
+            # Only actually change default if it has an attribute named
+            # 'arg' that's callable.
+            callable_default = getattr(default, "arg", None)
+
+            if callable_default is not None:
+                # ColumnDefault(val).arg can be also a plain value
+                default = (
+                    callable_default(None)
+                    if callable(callable_default)
+                    else callable_default
+                )
+
+        kwargs["default"] = default
+        optional_types = (Boolean,)
+
+        if column.nullable:
+            kwargs["validators"].append(validators.Optional())
+
+        if (
+            not column.nullable
+            and not isinstance(column.type, optional_types)
+            and not column.default
+            and not column.server_default
+        ):
+            kwargs["validators"].append(validators.InputRequired())
+
+        return kwargs
+
+    async def _prepare_relationship(
         self,
-        prop: Union[ColumnProperty, RelationshipProperty],
-        engine: Union[Engine, AsyncEngine],
-    ) -> List[Tuple[str, object]]:
+        prop: RelationshipProperty,
+        kwargs: dict,
+        engine: ENGINE_TYPE,
+        loader: Optional[QueryAjaxModelLoader] = None,
+    ) -> dict:
+        nullable = True
+        for pair in prop.local_remote_pairs:
+            if not pair[0].nullable:
+                nullable = False
+
+        kwargs["allow_blank"] = nullable
+
+        if not loader:
+            kwargs.setdefault("data", await self._prepare_select_options(prop, engine))
+
+        return kwargs
+
+    async def _prepare_select_options(
+        self,
+        prop: RelationshipProperty,
+        engine: ENGINE_TYPE,
+    ) -> List[Tuple[str, Any]]:
         target_model = prop.mapper.class_
-        pk = sqlalchemy_inspect(target_model).primary_key[0].name
-        stmt = select(target_model)
+        pk = get_primary_key(target_model)
+        stmt = select(target_model).limit(100)
 
         if isinstance(engine, Engine):
             with Session(engine) as session:
                 objects = await anyio.to_thread.run_sync(session.execute, stmt)
-                object_list = [
-                    (str(self.get_pk(obj, pk)), obj) for obj in objects.scalars().all()
+                return [
+                    (self._get_pk_value(obj, pk), str(obj))
+                    for obj in objects.scalars().all()
                 ]
-        else:
+        elif isinstance(engine, AsyncEngine):
             async with AsyncSession(engine) as session:
                 objects = await session.execute(stmt)
-                object_list = [
-                    (str(self.get_pk(obj, pk)), obj) for obj in objects.scalars().all()
+                return [
+                    (self._get_pk_value(obj, pk), str(obj))
+                    for obj in objects.scalars().all()
                 ]
 
-        return object_list
+        return []  # pragma: nocover
 
-    def get_converter(
-        self, prop: Union[ColumnProperty, RelationshipProperty]
-    ) -> ConverterCallable:
-        if not isinstance(prop, ColumnProperty):
-            name = prop.direction.name
-            if name == "ONETOMANY" and not prop.uselist:
-                name = "ONETOONE"
-            return self._converters[name]
+    def get_converter(self, prop: MODEL_ATTR_TYPE) -> ConverterCallable:
+        if isinstance(prop, RelationshipProperty):
+            direction = get_direction(prop)
+            return self._converters[direction]
 
         column = prop.columns[0]
         types = inspect.getmro(type(column.type))
@@ -228,15 +259,17 @@ class ModelConverterBase:
     async def convert(
         self,
         model: type,
-        prop: Union[ColumnProperty, RelationshipProperty],
-        engine: Union[Engine, AsyncEngine],
+        prop: MODEL_ATTR_TYPE,
+        engine: ENGINE_TYPE,
         field_args: Dict[str, Any],
         field_widget_args: Dict[str, Any],
         form_include_pk: bool,
         label: Optional[str] = None,
         override: Optional[Type[Field]] = None,
+        form_ajax_refs: Dict[str, QueryAjaxModelLoader] = {},
     ) -> Optional[UnboundField]:
 
+        loader = form_ajax_refs.get(prop.key)
         kwargs = await self._prepare_kwargs(
             prop=prop,
             engine=engine,
@@ -244,6 +277,7 @@ class ModelConverterBase:
             field_widget_args=field_widget_args,
             label=label,
             form_include_pk=form_include_pk,
+            loader=loader,
         )
 
         if kwargs is None:
@@ -253,11 +287,23 @@ class ModelConverterBase:
             assert issubclass(override, Field)
             return override(**kwargs)
 
+        multiple = (
+            is_relationship(prop)
+            and prop.direction.name in ("ONETOMANY", "MANYTOMANY")
+            and prop.uselist
+        )
+
+        if loader:
+            if multiple:
+                return AjaxSelectMultipleField(loader, **kwargs)
+            else:
+                return AjaxSelectField(loader, **kwargs)
+
         converter = self.get_converter(prop=prop)
         return converter(model=model, prop=prop, kwargs=kwargs)
 
-    def get_pk(self, o: Any, pk_name: str) -> Any:
-        return getattr(o, pk_name)
+    def _get_pk_value(self, o: Any, pk: Column) -> str:
+        return str(getattr(o, pk.name))
 
 
 class ModelConverter(ModelConverterBase):
@@ -300,6 +346,12 @@ class ModelConverter(ModelConverterBase):
         self, model: type, prop: ColumnProperty, kwargs: Dict[str, Any]
     ) -> UnboundField:
         return DateField(**kwargs)
+
+    @converts("Time")
+    def conv_time(
+        self, model: type, prop: ColumnProperty, kwargs: Dict[str, Any]
+    ) -> UnboundField:
+        return TimeField(**kwargs)
 
     @converts("DateTime")
     def conv_datetime(
@@ -395,19 +447,25 @@ class ModelConverter(ModelConverterBase):
         return StringField(**kwargs)
 
     @converts("sqlalchemy_utils.types.url.URLType")
-    def conv_url(self, model: type, prop: ColumnProperty, kwargs: Dict[str, Any]):
+    def conv_url(
+        self, model: type, prop: ColumnProperty, kwargs: Dict[str, Any]
+    ) -> UnboundField:
         kwargs.setdefault("validators", [])
         kwargs["validators"].append(validators.URL())
         return StringField(**kwargs)
 
     @converts("sqlalchemy_utils.types.currency.CurrencyType")
-    def conv_currency(self, model: type, prop: ColumnProperty, kwargs: Dict[str, Any]):
+    def conv_currency(
+        self, model: type, prop: ColumnProperty, kwargs: Dict[str, Any]
+    ) -> UnboundField:
         kwargs.setdefault("validators", [])
         kwargs["validators"].append(CurrencyValidator())
         return StringField(**kwargs)
 
     @converts("sqlalchemy_utils.types.timezone.TimezoneType")
-    def conv_timezone(self, model: type, prop: ColumnProperty, kwargs: Dict[str, Any]):
+    def conv_timezone(
+        self, model: type, prop: ColumnProperty, kwargs: Dict[str, Any]
+    ) -> UnboundField:
         kwargs.setdefault("validators", [])
         kwargs["validators"].append(
             TimezoneValidator(coerce_function=prop.columns[0].type._coerce)
@@ -436,14 +494,15 @@ class ModelConverter(ModelConverterBase):
 
 async def get_model_form(
     model: type,
-    engine: Union[Engine, AsyncEngine],
+    engine: ENGINE_TYPE,
     only: Sequence[str] = None,
     exclude: Sequence[str] = None,
     column_labels: Dict[str, str] = None,
     form_args: Dict[str, Dict[str, Any]] = None,
     form_widget_args: Dict[str, Dict[str, Any]] = None,
     form_class: Type[Form] = Form,
-    form_overrides: Dict[str, Dict[str, Type[Field]]] = None,
+    form_overrides: Dict[str, Type[Field]] = None,
+    form_ajax_refs: Dict[str, QueryAjaxModelLoader] = None,
     form_include_pk: bool = False,
 ) -> Type[Form]:
     type_name = model.__name__ + "Form"
@@ -453,6 +512,7 @@ async def get_model_form(
     form_widget_args = form_widget_args or {}
     column_labels = column_labels or {}
     form_overrides = form_overrides or {}
+    form_ajax_refs = form_ajax_refs or {}
 
     attributes = []
     names = only or mapper.attrs.keys()
@@ -476,6 +536,7 @@ async def get_model_form(
             label=label,
             override=override,
             form_include_pk=form_include_pk,
+            form_ajax_refs=form_ajax_refs,
         )
         if field is not None:
             field_dict[name] = field

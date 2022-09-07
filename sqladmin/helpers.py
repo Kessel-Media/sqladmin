@@ -3,7 +3,12 @@ import os
 import re
 import unicodedata
 from abc import ABC, abstractmethod
-from typing import Callable, Generator, List, TypeVar, Union
+from typing import Any, Callable, Generator, List, TypeVar, Union
+
+from sqlalchemy import Column, inspect
+from sqlalchemy.orm import RelationshipProperty
+
+from sqladmin._types import MODEL_ATTR_TYPE
 
 T = TypeVar("T")
 
@@ -22,13 +27,6 @@ _windows_device_files = (
     "PRN",
     "NUL",
 )
-
-
-def as_str(s: Union[str, bytes]) -> str:
-    if isinstance(s, bytes):
-        return s.decode("utf-8")
-
-    return str(s)
 
 
 def prettify_class_name(name: str) -> str:
@@ -90,7 +88,7 @@ class Writer(ABC):
         pass  # pragma: no cover
 
 
-class _PseudoBuffer(object):
+class _PseudoBuffer:
     """An object that implements just the write method of the file-like
     interface.
     """
@@ -112,4 +110,37 @@ def stream_to_csv(
     https://docs.djangoproject.com/en/1.8/howto/outputting-csv/
     """
     writer = csv.writer(_PseudoBuffer())
-    return callback(writer)
+    return callback(writer)  # type: ignore
+
+
+def get_primary_key(model: type) -> Column:
+    pks = inspect(model).mapper.primary_key
+    assert len(pks) == 1, "Multiple Primary Keys not supported."
+    return pks[0]
+
+
+def get_relationships(model: Any) -> List[MODEL_ATTR_TYPE]:
+    return list(inspect(model).relationships)
+
+
+def get_attributes(model: Any) -> List[MODEL_ATTR_TYPE]:
+    return list(inspect(model).attrs)
+
+
+def get_direction(attr: MODEL_ATTR_TYPE) -> str:
+    assert isinstance(attr, RelationshipProperty)
+    name = attr.direction.name
+    if name == "ONETOMANY" and not attr.uselist:
+        return "ONETOONE"
+    return name
+
+
+def get_column_python_type(column: Column) -> type:
+    try:
+        return column.type.python_type
+    except NotImplementedError:
+        return str
+
+
+def is_relationship(attr: MODEL_ATTR_TYPE) -> bool:
+    return isinstance(attr, RelationshipProperty)

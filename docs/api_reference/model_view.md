@@ -1,4 +1,4 @@
-::: sqladmin.models.ModelAdmin
+::: sqladmin.models.ModelView
     handler: python
     selection:
       members:
@@ -41,3 +41,8 @@
         - form_overrides
         - form_widget_args
         - form_include_pk
+        - form_ajax_refs
+        - column_type_formatters
+        - list_query
+        - count_query
+        - search_query

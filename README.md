@@ -38,11 +38,11 @@ Main features include:
 
 ---
 
-**Documentation**: [https://aminalaee.github.io/sqladmin](https://aminalaee.github.io/sqladmin)
+**Documentation**: [https://aminalaee.dev/sqladmin](https://aminalaee.dev/sqladmin)
 
 **Source Code**: [https://github.com/aminalaee/sqladmin](https://github.com/aminalaee/sqladmin)
 
-**Online Demo**: [Demo](https://python-sqladmin.herokuapp.com/admin/)
+**Online Demo**: [Demo](https://sqladmin-demo.aminalaee.dev/admin/)
 
 ---
 
@@ -84,24 +84,24 @@ If you want to use `SQLAdmin` with `FastAPI`:
 
 ```python
 from fastapi import FastAPI
-from sqladmin import Admin, ModelAdmin
+from sqladmin import Admin, ModelView
 
 
 app = FastAPI()
 admin = Admin(app, engine)
 
 
-class UserAdmin(ModelAdmin, model=User):
+class UserAdmin(ModelView, model=User):
     column_list = [User.id, User.name]
 
 
-admin.register_model(UserAdmin)
+admin.add_view(UserAdmin)
 ```
 
 Or if you want to use `SQLAdmin` with `Starlette`:
 
 ```python
-from sqladmin import Admin, ModelAdmin
+from sqladmin import Admin, ModelView
 from starlette.applications import Starlette
 
 
@@ -109,11 +109,11 @@ app = Starlette()
 admin = Admin(app, engine)
 
 
-class UserAdmin(ModelAdmin, model=User):
+class UserAdmin(ModelView, model=User):
     column_list = [User.id, User.name]
 
 
-admin.register_model(UserAdmin)
+admin.add_view(UserAdmin)
 ```
 
 Now visiting `/admin` on your browser you can see the `SQLAdmin` interface.

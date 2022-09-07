@@ -1,16 +1,16 @@
-import datetime
 import json
 import operator
-import time
-from typing import Any, Callable, Generator, List, Optional, Tuple, Union
+from typing import Any, Callable, Generator, List, Optional, Set, Tuple, Union
 
 from sqlalchemy import inspect
-from wtforms import Form, ValidationError, fields, widgets
+from wtforms import Form, SelectFieldBase, ValidationError, fields, widgets
 
 from sqladmin import widgets as sqladmin_widgets
-from sqladmin.helpers import as_str
+from sqladmin.ajax import QueryAjaxModelLoader
 
 __all__ = [
+    "AjaxSelectField",
+    "AjaxSelectMultipleField",
     "DateField",
     "DateTimeField",
     "JSONField",
@@ -37,99 +37,13 @@ class DateTimeField(fields.DateTimeField):
 
     widget = sqladmin_widgets.DateTimePickerWidget()
 
-    def __init__(
-        self,
-        label: str = None,
-        validators: list = None,
-        format: str = None,
-        **kwargs: Any,
-    ) -> None:
-        """
-        Constructor
-        :param label:
-            Label
-        :param validators:
-            Field validators
-        :param format:
-            Format for text to date conversion. Defaults to '%Y-%m-%d %H:%M:%S'
-        :param kwargs:
-            Any additional parameters
-        """
-        super().__init__(label, validators, **kwargs)
 
-        self.format = format or "%Y-%m-%d %H:%M:%S"
-
-
-class TimeField(fields.Field):
+class TimeField(fields.TimeField):
     """
     A text field which stores a `datetime.time` object.
-    Accepts time string in multiple formats: 20:10, 20:10:00, 10:00 am, 9:30pm, etc.
     """
 
     widget = sqladmin_widgets.TimePickerWidget()
-
-    def __init__(
-        self,
-        label: str = None,
-        validators: list = None,
-        formats: List[str] = None,
-        default_format: str = None,
-        **kwargs: Any,
-    ) -> None:
-        """
-        Constructor
-
-        :param label:
-            Label
-        :param validators:
-            Field validators
-        :param formats:
-            Supported time formats, as a enumerable.
-        :param default_format:
-            Default time format. Defaults to '%H:%M:%S'
-        :param kwargs:
-            Any additional parameters
-        """
-        super().__init__(label, validators, **kwargs)
-
-        self.formats = formats or (
-            "%H:%M:%S",
-            "%H:%M",
-            "%I:%M:%S%p",
-            "%I:%M%p",
-            "%I:%M:%S %p",
-            "%I:%M %p",
-        )
-
-        self.default_format = default_format or "%H:%M:%S"
-        self.data: Optional[datetime.time]
-
-    def _value(self) -> str:
-        if self.raw_data:
-            return " ".join(self.raw_data)
-        elif self.data is not None:
-            return self.data.strftime(self.default_format)
-        else:
-            return ""
-
-    def process_formdata(self, valuelist: List[str]) -> None:
-        if valuelist:
-            date_str = " ".join(valuelist)
-
-            if date_str.strip():
-                for format in self.formats:
-                    try:
-                        timetuple = time.strptime(date_str, format)
-                        self.data = datetime.time(
-                            timetuple.tm_hour, timetuple.tm_min, timetuple.tm_sec
-                        )
-                        return
-                    except ValueError:
-                        pass
-
-                raise ValueError("Invalid time format")
-            else:
-                self.data = None
 
 
 class SelectField(fields.SelectField):
@@ -180,56 +94,12 @@ class SelectField(fields.SelectField):
         super().pre_validate(form)
 
 
-class Select2TagsField(fields.StringField):
-    """
-    `Select2 <https://github.com/select2/select2>`_ styled text field.
-    """
-
-    widget = sqladmin_widgets.Select2TagsWidget()
-
-    def __init__(
-        self,
-        label: str = None,
-        validators: list = None,
-        save_as_list: bool = False,
-        coerce: type = str,
-        **kwargs: Any,
-    ) -> None:
-        """
-        Initialization
-
-        :param save_as_list:
-            If `True` then populate ``obj`` using list else string
-        """
-        self.save_as_list = save_as_list
-        self.coerce = coerce
-
-        super().__init__(label, validators, **kwargs)
-
-    def process_formdata(self, valuelist: List[str]) -> None:
-        if valuelist:
-            if self.save_as_list:
-                self.data = [
-                    self.coerce(v.strip()) for v in valuelist[0].split(",") if v.strip()
-                ]
-            else:
-                self.data = self.coerce(valuelist[0])
-
-    def _value(self) -> str:
-        if isinstance(self.data, (list, tuple)):
-            return ",".join(as_str(v) for v in self.data)
-        elif self.data:
-            return as_str(self.data)
-        else:
-            return ""
-
-
 class JSONField(fields.TextAreaField):
     def _value(self) -> str:
         if self.raw_data:
             return self.raw_data[0]
         elif self.data:
-            return as_str(json.dumps(self.data, ensure_ascii=False))
+            return str(json.dumps(self.data, ensure_ascii=False))
         else:
             return "{}"
 
@@ -249,36 +119,11 @@ class JSONField(fields.TextAreaField):
 
 
 class QuerySelectField(fields.SelectFieldBase):
-    """
-    Will display a select drop-down field to choose between ORM results in a
-    sqlalchemy `Query`.  The `data` property actually will store/keep an ORM
-    model instance, not the ID. Submitting a choice which is not in the query
-    will result in a validation error.
-
-    This field only works for queries on models whose primary key column(s)
-    have a consistent string representation. This means it mostly only works
-    for those composed of string, unicode, and integer types. For the most
-    part, the primary keys will be auto-detected from the model, alternately
-    pass a one-argument callable to `get_pk` which can return a unique
-    comparable key.
-
-    Specify `get_label` to customize the label associated with each option. If
-    a string, this is the name of an attribute on the model object to use as
-    the label text. If a one-argument callable, this callable will be passed
-    model instance and expected to return the label text. Otherwise, the model
-    object's `__str__` will be used.
-
-    If `allow_blank` is set to `True`, then a blank choice will be added to the
-    top of the list. Selecting this choice will result in the `data` property
-    being `None`. The label for this blank choice can be set by specifying the
-    `blank_text` parameter.
-    """
-
     widget = widgets.Select()
 
     def __init__(
         self,
-        object_list: list = None,
+        data: list = None,
         label: str = None,
         validators: list = None,
         get_label: Union[Callable, str] = None,
@@ -288,7 +133,7 @@ class QuerySelectField(fields.SelectFieldBase):
     ) -> None:
         super().__init__(label=label, validators=validators, **kwargs)
 
-        self._object_list = object_list or []
+        self._select_data = data or []
 
         if get_label is None:
             self.get_label = lambda x: x
@@ -305,9 +150,9 @@ class QuerySelectField(fields.SelectFieldBase):
     @property
     def data(self) -> Optional[tuple]:
         if self._formdata is not None:
-            for pk, obj in self._object_list:
+            for pk, _ in self._select_data:
                 if pk == self._formdata:
-                    self.data = obj
+                    self.data = pk
                     break
         return self._data
 
@@ -320,10 +165,13 @@ class QuerySelectField(fields.SelectFieldBase):
         if self.allow_blank:
             yield ("__None", self.blank_text, self.data is None)
 
-        identity = inspect(self.data).identity[0] if self.data else "__None"
+        if self.data:
+            primary_key = str(inspect(self.data).identity[0])
+        else:
+            primary_key = None
 
-        for pk, obj in self._object_list:
-            yield (pk, self.get_label(obj), pk == str(identity))
+        for pk, label in self._select_data:
+            yield (pk, self.get_label(label), str(pk) == primary_key)
 
     def process_formdata(self, valuelist: List[str]) -> None:
         if valuelist:
@@ -336,8 +184,8 @@ class QuerySelectField(fields.SelectFieldBase):
     def pre_validate(self, form: Form) -> None:
         data = self.data
         if data is not None:
-            for _, obj in self._object_list:
-                if data == obj:
+            for pk, _ in self._select_data:
+                if data == pk:
                     break
             else:  # pragma: no cover
                 raise ValidationError(self.gettext("Not a valid choice"))
@@ -359,7 +207,7 @@ class QuerySelectMultipleField(QuerySelectField):
 
     def __init__(
         self,
-        object_list: list = None,
+        data: list = None,
         label: str = None,
         validators: list = None,
         default: Any = None,
@@ -368,7 +216,7 @@ class QuerySelectMultipleField(QuerySelectField):
         default = default or []
         super().__init__(label=label, validators=validators, default=default, **kwargs)
 
-        self._object_list = object_list or []
+        self._select_data = data or []
 
         if kwargs.get("allow_blank", False):
             import warnings
@@ -385,12 +233,12 @@ class QuerySelectMultipleField(QuerySelectField):
         formdata = self._formdata
         if formdata is not None:
             data = []
-            for pk, obj in self._object_list:
+            for pk, _ in self._select_data:
                 if not formdata:
                     break
                 elif pk in formdata:
                     formdata.remove(pk)
-                    data.append(obj)
+                    data.append(pk)
             if formdata:
                 self._invalid_formdata = True
             self.data = data or self._data  # type: ignore
@@ -404,8 +252,8 @@ class QuerySelectMultipleField(QuerySelectField):
     def iter_choices(self) -> Generator[Tuple[str, Any, bool], None, None]:
         if self.data is not None:
             primary_keys = [str(inspect(m).identity[0]) for m in self.data]
-            for pk, obj in self._object_list:
-                yield (pk, self.get_label(obj), pk in primary_keys)
+            for pk, label in self._select_data:
+                yield (pk, self.get_label(label), pk in primary_keys)
 
     def process_formdata(self, valuelist: List[str]) -> None:
         self._formdata = list(set(valuelist))
@@ -414,8 +262,90 @@ class QuerySelectMultipleField(QuerySelectField):
         if self._invalid_formdata:
             raise ValidationError(self.gettext("Not a valid choice"))
         elif self.data:
-            pk_list = [x[0] for x in self._object_list]
+            pk_list = [x[0] for x in self._select_data]
             for v in self.data:
-                identity = inspect(v).identity
-                if identity and str(identity[0]) not in pk_list:  # pragma: no cover
+                if v not in pk_list:  # pragma: no cover
                     raise ValidationError(self.gettext("Not a valid choice"))
+
+
+class AjaxSelectField(SelectFieldBase):
+    widget = sqladmin_widgets.AjaxSelect2Widget()
+    separator = ","
+
+    def __init__(
+        self,
+        loader: QueryAjaxModelLoader,
+        label: str = None,
+        validators: list = None,
+        allow_blank: bool = False,
+        **kwargs: Any,
+    ) -> None:
+        kwargs.pop("data", None)  # Handled by JS side
+        self.loader = loader
+        self.allow_blank = allow_blank
+        super().__init__(label, validators, **kwargs)
+
+    @property
+    def data(self) -> Any:
+        if self._formdata:
+            self.data = self._formdata
+
+        return self._data
+
+    @data.setter
+    def data(self, data: Any) -> None:
+        self._data = data
+        self._formdata = None
+
+    def process_formdata(self, valuelist: list) -> None:
+        if valuelist:
+            if self.allow_blank and valuelist[0] == "__None":
+                self.data = None
+            else:
+                self._data = None
+                self._formdata = valuelist[0]
+
+    def pre_validate(self, form: Form) -> None:
+        if not self.allow_blank and self.data is None:
+            raise ValidationError("Not a valid choice")
+
+
+class AjaxSelectMultipleField(SelectFieldBase):
+    widget = sqladmin_widgets.AjaxSelect2Widget(multiple=True)
+    separator = ","
+
+    def __init__(
+        self,
+        loader: QueryAjaxModelLoader,
+        label: str = None,
+        validators: list = None,
+        default: list = None,
+        allow_blank: bool = False,
+        **kwargs: Any,
+    ) -> None:
+        kwargs.pop("data", None)  # Handled by JS side
+        self.loader = loader
+        self.allow_blank = allow_blank
+        default = default or []
+        self._formdata: Set[Any] = set()
+
+        super().__init__(label, validators, default=default, **kwargs)
+
+    @property
+    def data(self) -> Any:
+        if self._formdata:
+            self.data = self._formdata
+
+        return self._data
+
+    @data.setter
+    def data(self, data: Any) -> None:
+        self._data = data
+        self._formdata = set()
+
+    def process_formdata(self, valuelist: list) -> None:
+        self._formdata = set()
+
+        for field in valuelist:
+            for n in field.split(self.separator):
+                self._formdata.add(n)

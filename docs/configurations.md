@@ -1,7 +1,7 @@
 SQLAdmin configuration options are heavily inspired by the Flask-Admin project.
 
 This page will give you a basic introduction and for all the details
-you can visit [API Reference](./api_reference/model_admin.md).
+you can visit [API Reference](./api_reference/model_view.md).
 
 Let's say you've defined your SQLAlchemy models like this:
 
@@ -32,21 +32,21 @@ If you want to integrate SQLAdmin into FastAPI application:
 
 ```python
 from fastapi import FastAPI
-from sqladmin import Admin, ModelAdmin
+from sqladmin import Admin, ModelView
 
 
 app = FastAPI()
 admin = Admin(app, engine)
 
 
-class UserAdmin(ModelAdmin, model=User):
+class UserAdmin(ModelView, model=User):
     column_list = [User.id, User.name]
 
 
-admin.register_model(UserAdmin)
+admin.add_view(UserAdmin)
 ```
 
-As you can see the `UserAdmin` class inherits from `ModelAdmin` and accepts some configurations.
+As you can see the `UserAdmin` class inherits from `ModelView` and accepts some configurations.
 
 ## Permissions
 
@@ -62,7 +62,7 @@ The following options are available:
 !!! example
 
     ```python
-    class UserAdmin(ModelAdmin, model=User):
+    class UserAdmin(ModelView, model=User):
         can_create = True
         can_edit = True
         can_delete = False
@@ -76,16 +76,14 @@ The metadata for the model. The options are:
 * `name`: Display name for this model. Default value is the class name.
 * `name_plural`: Display plural name for this model. Default value is class name + `s`.
 * `icon`: Icon to be displayed for this model in the admin. Only FontAwesome names are supported.
-* `column_labels`: A mapping of column labels, used to map column names to new names in all places.
 
 !!! example
 
     ```python
-    class UserAdmin(ModelAdmin, model=User):
+    class UserAdmin(ModelView, model=User):
         name = "User"
         name_plural = "Users"
         icon = "fa-solid fa-user"
-        column_labels = {User.mail: "Email"}
     ```
 
 ## List page
@@ -102,22 +100,25 @@ The options available are:
 * `column_sortable_list`: List of columns or column names to be sortable in the list page.
 * `column_default_sort`: Default sorting if no sorting is applied, tuple of (column, is_descending)
 or list of the tuple for multiple columns.
+* `list_query`: A SQLAlchemy `select` expression to use for model list page.
+* `count_query`: A SQLAlchemy `select` expression to use for model count.
+* `search_query`: A method with the signature of `(stmt, term) -> stmt` which can customize the search query.
 
 !!! example
 
     ```python
-    class UserAdmin(ModelAdmin, model=User):
+    class UserAdmin(ModelView, model=User):
         column_list = [User.id, User.name]
         # column_list = ["id", "name"]
     ```
 
     ```python
-    class UserAdmin(ModelAdmin, model=User):
+    class UserAdmin(ModelView, model=User):
         column_exclude_list = [User.id]
     ```
 
     ```python
-    class UserAdmin(ModelAdmin, model=User):
+    class UserAdmin(ModelView, model=User):
         column_searchable_list = [User.name]
         column_sortable_list = [User.id]
         column_formatters = {User.name: lambda m, a: m.name[:10]}
@@ -138,17 +139,17 @@ The options available are:
 !!! example
 
     ```python
-    class UserAdmin(ModelAdmin, model=User):
+    class UserAdmin(ModelView, model=User):
         column_details_list = [User.id, User.name]
     ```
 
     ```python
-    class UserAdmin(ModelAdmin, model=User):
+    class UserAdmin(ModelView, model=User):
         column_details_exclude_list = [User.id]
     ```
 
     ```python
-    class UserAdmin(ModelAdmin, model=User):
+    class UserAdmin(ModelView, model=User):
         column_formatters_detail = {User.name: lambda m, a: m.name[:10]}
     ```
 
@@ -162,9 +163,28 @@ The pagination options in the list page can be configured. The available options
 !!! example
 
     ```python
-    class UserAdmin(ModelAdmin, model=User):
+    class UserAdmin(ModelView, model=User):
         page_size = 50
         page_size_options = [25, 50, 100, 200]
+    ```
+
+## General options
+
+There are a few options which apply to both List and Detail pages. They include:
+
+* `column_labels`: A mapping of column labels, used to map column names to new names in all places.
+* `column_type_formatters`: A mapping of type keys and callable values to format in all places.
+For example you can add custom date formatter to be used in both list and detail pages.
+
+!!! example
+
+    ```python
+    class UserAdmin(ModelView, model=User):
+        def date_format(value):
+            return value.strftime("%d.%m.%Y")
+
+        column_labels = {User.mail: "Email"}
+        column_type_formatters = dict(ModelView.column_type_formatters, date=date_format)
     ```
 
 ## Form options
@@ -180,16 +200,23 @@ The forms are based on `WTForms` package and include the following options:
 * `form_excluded_columns`: List of model columns to be excluded from the form.
 * `form_overrides`: Dictionary of form fields to override when creating the form.
 * `form_include_pk`: Control if primary key column should be included in create/edit forms. Default is `False`.
+* `form_ajax_refs`: Use Ajax with Select2 for loading relationship models async. This is use ful when the related model has a lot of records.
 
 !!! example
 
     ```python
-    class UserAdmin(ModelAdmin, model=User):
+    class UserAdmin(ModelView, model=User):
         form_columns = [User.name]
         form_args = dict(name=dict(label="Full name"))
         form_widget_args = dict(email=dict(readonly=True))
         form_overrides = dict(email=wtforms.EmailField)
         form_include_pk = True
+        form_ajax_refs = {
+            "address": {
+                "fields": ("zip_code", "street"),
+                "order_by": ("id",),
+            }
+        }
     ```
 
 ## Export options
@@ -216,8 +243,42 @@ The pages available are:
 !!! example
 
     ```python
-    class UserAdmin(ModelAdmin, model=User):
+    class UserAdmin(ModelView, model=User):
         list_template = "custom_list.html"
     ```
 
 For more information about working with template see [Working with Templates](./working_with_templates.md).
+
+## Custom Views
+
+To add custom views to the Admin interface, you can use the `BaseView` included in SQLAdmin.
+
+For example:
+
+!!! example
+
+    ```python
+    from sqladmin import BaseView, expose
+
+    class CustomView(BaseView):
+        name = "Custom Page"
+        icon = "fa-chart-line"
+
+        @expose("/custom", methods=["GET"])
+        def custom_page(self, request):
+            return self.templates.TemplateResponse(
+                "custom.html",
+                context={"request": request},
+            )
+
+    admin.add_view(CustomView)
+    ```
+
+This will assume a `templates` directory exists in your project.
+You can modify this when you create an Admin instance:
+
+```python
+from sqladmin import Admin
+
+admin = Admin(templates_dir="my_templates", ...)
+```
